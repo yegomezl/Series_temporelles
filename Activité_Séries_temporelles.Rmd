@@ -1,0 +1,213 @@
+---
+title: "Séries temporelles"
+author: "Yelena Gómez"
+date: "5/4/2020"
+output: html_document
+---
+
+Cette activité a pour objectif de créer, de modéliser et d'analyser une série temporelle. Pour ce faire, il faut d'abord charger les modules nécessaires pour créer et manipuler des tableaux, manipuler les dates et créer des prévisions des séries temporelles :
+
+```{r, warning=FALSE, message = FALSE, error = FALSE}
+library("tidyverse")
+library("lubridate")
+library("forecast")
+```
+
+
+### **1. Exploration des données**
+
+Ensuite, le fichier de données `hawai.csv` qui comprennent les moyennes des mesures mensuelles de CO2 atmosphérique en ppm-volume du Mauna Loa Observatory à Hawaï de mars 1958 à décembre 2001 est importé afin de créer et de modéliser une série temporelle :
+
+
+```{r}
+CO2_data <- read_csv("data/hawai.csv")
+glimpse(CO2_data)
+```
+
+
+Le fichier de données est composé de **526** observations et de 2 variables (*time* et *CO2*). La variable *time* correspond à la date qui est exprimée sous la forme de date décimale. Cette variable n'est donc pas détectée comme une date. Les décimales sont par conséquent transformées en données temporelles à l'aide de la fonction `lubridate::date_decimal()` comme suit :
+
+
+```{r}
+CO2_hawai <- CO2_data %>%
+  mutate(time = date_decimal(CO2_data$time, tz = "UTC"))
+glimpse(CO2_hawai)
+```
+
+Il est possible de vérifier cette transformation avec la fonction de base `class()` : 
+
+```{r}
+CO2_hawai %>% pull(time) %>% class()
+```
+
+Une fois la colonne *time* est transformée en un format `Date-Time`, tel que démontré ci-dessus, une visualisation des données est effectuée afin d'explorer la structure du CO2 atmosphérique au fil du temps : 
+
+```{r}
+CO2_data %>%
+  ggplot(aes(x = time, y = CO2)) +
+  geom_line()
+```
+
+On observe à première vue que les données présentent une *tendance croissante* probablement expliquée par le changement climatique et présentent également une *fluctuation saisonnière*. 
+
+
+### **2. Création de la série temporelle**
+
+Afin de créer une série temporelle de la concentration de CO2 atmosphérique à Hawaï, la fonction `stats::ts()` est utilisée. L'argument `start` de la fonction définit la date de la première observation (mars 1958) et l'argument `frequency` définit le nombre d'observations par unité de temps. Dans ce cas, les mesures ont été prises chaque mois, ce dernier argument est donc de 12.    
+
+```{r}
+CO2_ts <- ts(CO2_hawai %>% dplyr::select(-time),
+               start = c(1958, 3), frequency = 12)
+```
+
+### **3. Modélisation de la série temporelle**
+
+#### **3.1 Série d'entraînement et série de test**
+
+Pour la séparation dans le temps des données de la série temporelle crée auparavant, la fonction de base `windows()` est utilisée. Environ 70% des mesures sont attribuées à la série d'entraînement (les 370 premières observations environ, qui ont été réalisées de mars 1958 à décembre 1988) et le 30% d'observations restantes sont attribuées à la série de test (de janvier 1989 à décembre 2001) : 
+
+```{r}
+CO2_ts_train <- window(CO2_ts, start = c(1958, 3), end = c(1988, 12))
+CO2_ts_test <- window(CO2_ts, start = c(1989, 1), end = c(2001, 12))
+```
+
+
+#### **3.2 Aplication du modèle ETS** 
+
+La modélisation de la série temporelle en étude est réalisée à travers de l'utilisation du **modèle ETS** (*error, tend and seasonnal*) qui fait partie de la famille SES (la méthode de prévision SES). L'optimisation du modèle est appliqué à la série d'entraînement en utilisant la fonction `forecast::ets()` qui permet de connaître le type d'erreur du modèle, de tendance et de saison, ainsi que de trouver les paramètres de lissage $\alpha, \beta, \gamma$ du modèle.
+
+Le type de modèles mentionnée ci-dessus sont les suivants :
+
+- **Tendance** : sans tendance - tendance additive - tendance adouci 
+- **Saison** : sans saison - saison additive - saison multiplicative
+- **Erreur** : erreur additive - erreur multiplicative 
+
+
+```{r}
+CO2_ets <- CO2_ts_train %>% ets()
+CO2_ets
+```
+
+Le modèle obtenue correspond à un modèle **ETS(A,A,A)**. Cela signifie qu'une erreur, une tendance et une saison de type additive sont obtenues.
+
+Donc, la prévision est réalisée par modélisation additive en fonction du niveau, de la tendance et de la saison. L'équation qui décrit la prévision est la suivante :
+
+**Prévision** : $\widehat{y}_{t+h|t} = l_t + h = b_t + S_{t-m+h_m}$
+
+Le niveau, la tendance et la saison sont décrits comme suit :
+
+**Niveau** : $l_t = \alpha(y_t-S_{t-m}) + \alpha(1-\alpha)(l_{t-1}+b_{t-1})$. Le paramètre $\alpha$ décrit la distribution des poids. Dans ce cas, on a obtenu un $\alpha=0.6698$. Cela indique que les événements plus récents du modèle ont un poids plus important dans la prévision.      
+
+**Tendance** : $l_t = \beta(l_t-l_{t-1}) + (1-\beta)b_{t-1}$ avec un  $\beta=0.003$, cette valeur indique que la tendance change à une faible vitesse puisque elle s'approche de zéro. 
+
+**Saison** : $S_t = \gamma(y_t-l_{t-1}-b_{t-1}) + (1-\gamma)S_{t-m}$; le paramètre$\gamma$ correspond à la portion saisonnière. Généralement, ce  paramètre fluctue autour de zéro. Dans ce cas, $\gamma=2\times10^{-4}$. 
+
+Le modèle ne présente pas de valeur $\phi$, qui adouci la pente. Il est donc probable que l’adoucissement ne se justifie pas.
+
+D'autre part, il est intéressant de visualiser l'évolution de chaque composante à l'aide des graphiques suivants :
+
+```{r}
+autoplot(CO2_ets)
+```
+
+Le graphique du niveau par rapport au temps permet d'affirmer que la tendance de la concentration de CO2 dans l'atmosphère est à la hausse au fil du temps.
+
+En outre, dans le graphique de la saison au cours des années, il est constaté 
+que la saison est de type additif car l'effet saisonnière fluctue autour de zéro.
+
+#### **3.3 Prédiction du modèle** 
+
+Pour obtenir la prédiction du modèle, la fonction `forecast:: forecast()` est utilisée avec une argument h (nombre de périodes pour les prévisions) de 156 correspondant au nombre d'observations qui composent la série de test (longeur de la série de test). 
+
+Le graphique suivant sert à évaluer la performance du modèle de prévision, en visualisant les valeurs obtenues (ligne bleu foncé) et les valeurs de la série de test (ligne grise). Les régions bleues et transparentes font référence aux intervalles prévisionnels du modèle. 
+
+```{r}
+hawai_CO2_fc <- CO2_ets %>% forecast(h = length(CO2_ts_test))
+autoplot(hawai_CO2_fc) + autolayer(CO2_ts_test, color = "grey10") 
+```
+
+De cette figure, il est possible d'observer que le modèle est presque idéal pour certaines années, alors que pour d'autres, le modèle sous-estime ou surestime la prévision. 
+
+D'une manière générale, j'oserais dire qu'à première vue, il semble être un bon modèle. Toutefois, il est pertinent de faire une analyse d'exactitude et des résidus pour vérifier cela.  
+
+#### **3.4 Analyse de l'exactitude du modèle**
+
+La exactitude des prévisions peut être mesurée en résumant les erreurs de la prévision à l'aide de la fonction `forecast:accuracy()` comme suit :
+
+```{r}
+accuracy(hawai_CO2_fc, CO2_ts)
+```
+
+Parmi les paramètres statistiques obtenus, il est préférable de se focaliser sur l'erreur moyenne absolue échelonnée (MASE) pour évaluer la performance de la prévision car il ne dépend pas des unités des séries temporelles. 
+
+Le tableau ci-dessus montre que la MASE de la prévision est de 0.7199 et la MASE du modèle correspond à 0.2035 (ces valeurs sont près de zéro!). Cela indique que le modèle fournit une bonne prévision car selon la littérature lorsque cette valeur tend vers zéro, meilleur est la prévision. Par conséquence, il est possible d'affirmer que le modèle a une bonne performance. 
+
+#### **3.5 Analyse des résidus du modèle**
+
+En ce qui concerne **l'analyse des résidus**, il convient de préciser que les résidus sont utiles pour vérifier si le modèle a bien capturé les informations contenues dans les données. Ils sont donc calculés à partir de la série d'entraînement.
+
+Une méthode de prévision est considérée bonne lorsque ses résidus présentent les propriétés suivantes : 
+
+1. Absence de corrélation entre les résidus.
+2. La moyenne des résidus est de zéro.
+3. La variance des résidus est constante.
+4. Les résidus sont normalement distribués.
+
+Afin de vérifier ces propriétés, la fonction `forecast::checkresiduals()` est utilisée comme suit :
+
+```{r}
+checkresiduals(CO2_ets)
+```
+
+Il est à noter que la p-value obtenue est de 5.676e-09. Cela indique qu'il est peu probable que les résidus soient générés par un bruit blanc.
+
+D'autre part, les graphiques générées ci-dessus montrent que la **moyenne des résidus est proche de zéro** et qu'**il n'y a pas de corrélation significative** dans les séries de résidus. Le graphique des résidus en fonction du temps montre que la variation des résidus reste quasi la même au fil du temps (à l'exception de quelques valeurs aberrantes situées entre 1963 et 1965) et que la **variance est considérée constante** au cours des années. Toutefois, l'histogramme indique que les résidus peuvent ne pas être normaux. 
+
+Il est pertinent de vérifier la normalité des résidus à l'aide du test de normalité de Shapiro-Wilk :  
+
+```{r}
+shapiro.test(residuals(CO2_ets))
+```
+
+La p-value (~ 6.061e-07) indique que **la distribution des résidus n'est pas normale**.   
+
+
+Enfin, même si la dernière propriété n'est pas remplie, à mon avis, les résultats démontrent que la méthode appliquée génère de bonnes prévisions car le modèle semble tenir compte de la plupart des informations disponibles. Par conséquence, le modèle peut difficilement être amélioré.
+
+Cependant, l'application d'une transformation de Box-Cox peut parfois contribuer à améliorer la normalité de la distribution des résidus. Il convient de noter que cette propriété des résidus est souvent difficile à améliorer. Mais afin d'évaluer si le modèle peut être amélioré, la transformation sera appliquée :
+
+
+#### **4. Application de la transformation de Box-Cox**
+
+La modélisation de la série temporelle avec la transformation de Box-Cox est réalisée de la même manière que pour la série temporelle sans transformation, mais en utilisant le paramètre lambda dans l'application de la méthode ETS, qui est estimé avec la fonction `forecast::BoxCox.lambda()`. La valeur du paramètre $\lambda$ du modèle est de 0.09121. 
+
+```{r}
+CO2_ets_BC <- CO2_ts_train %>% ets(lambda = BoxCox.lambda(CO2_ts_train))
+
+hawai_CO2_fc_BC <- CO2_ets_BC %>%
+  forecast(h = length(CO2_ts_test))
+
+autoplot(hawai_CO2_fc_BC) + autolayer(CO2_ts_test, color = "grey10") 
+
+accuracy(hawai_CO2_fc_BC, CO2_ts)
+
+checkresiduals(CO2_ets_BC)
+
+shapiro.test(residuals(CO2_ets_BC))
+```
+
+
+Après l'application de la transformation, il est possible de constater que les paramètres statistiques ont diminué, mais pas de manière significative. Par exemple, la valeur de la MASE est passée de 0.2035 à 0.1968 pour le modèle et de 0.7199 à 0.6871 pour la prévision. 
+
+En ce qui concerne les résidus, ils ne présentent pas d'amélioration, conservant les mêmes caractéristiques que les précédents (la moyenne des résidus est proche de zéro, il n'y a pas de corrélation significative dans la série de résidus, la variance des résidus est à peu près constante au cours des années et la distribution des résidus n'est pas normale. 
+
+En bref, il a été constaté une amélioration du modèle de prévision, mais celle-ci est considérée comme non significative. Il est donc, préférable de conserver le modèle sans la transformation. 
+
+
+#### **Conclusion** 
+
+La modélisation de la série temporelle créée à partir des données mensuelles de CO2 atmosphérique du Mauna Loa Observatory à Hawaï de mars 1958 à décembre 2001, a été réalisée en appliquant la méthode ETS. Le modèle obtenu a montré des bonnes prévisions, en tenant compte d'une erreur, d'une tendance et d'une saison de type additif.  Toutefois, il a été observé que le modèle ne montrait pas une distribution normale des résidus. Par conséquent, afin d'améliorer le modèle, une transformation de Box-Cox a été effectuée, mais les résultats n'ont pas montré d'amélioration significative. De sorte qu'il a été décidé d'établir le modèle initial comme celui qui présentait les meilleures prédictions. 
+
+À titre de suggestion, il serait utile d'appliquer une autre méthode de modélisation et d'effectuer les comparaisons respectives pour évaluer si le modèle peut être amélioré.
+
+
